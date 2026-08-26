@@ -1,0 +1,27 @@
+# Service B : la MEME image, deployee en batch interne.
+project:
+  name: "nightly-report"
+  description: "Internal batch job producing an aggregated sales report"
+
+context:
+  exposure: "internal"
+  data_sensitivity: "low"
+  business_criticality: "low"
+  availability_requirement: "low"
+
+  compliance_requirements: []
+
+  audit_requirement: "low"
+
+  # Segmente, derriere le perimetre, avec detection.
+  controls:
+    waf: true
+    ddos_protection: true
+    ids: true
+    siem: true
+    edr: true
+    antivirus: true
+    segmentation: true
+    zero_trust: true
+
+  notes: "Batch job on an isolated internal subnet, no ingress at all and no listening socket. Started by the scheduler once a night, reads a pre-validated CSV from an internal bucket, writes an aggregate to a private database, then exits. No user input, no network service, unreachable from outside the cluster."

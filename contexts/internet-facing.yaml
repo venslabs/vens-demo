@@ -1,0 +1,30 @@
+# Service A : la MEME image, deployee en frontal internet.
+project:
+  name: "checkout-api"
+  description: "Public checkout API handling card payments for the storefront"
+
+context:
+  # exposure: internal | private | internet
+  exposure: "internet"
+  data_sensitivity: "critical"
+  business_criticality: "critical"
+  availability_requirement: "critical"
+
+  compliance_requirements:
+    - "PCI-DSS"
+    - "GDPR"
+
+  audit_requirement: "high"
+
+  # Aucun controle de perimetre devant ce service.
+  controls:
+    waf: false
+    ddos_protection: false
+    ids: false
+    siem: false
+    edr: false
+    antivirus: false
+    segmentation: false
+    zero_trust: false
+
+  notes: "Internet-facing REST API. Terminates TLS itself, no WAF and no reverse proxy in front. Accepts unauthenticated traffic on the payment initiation route, parses attacker-controlled JSON, and holds cardholder data plus customer PII. Reachable from the public internet on port 443."

@@ -1,0 +1,131 @@
+# La meme image, deux contextes de deploiement, deux verdicts de build.
+#
+# L'image est scannee UNE SEULE FOIS et le rapport est partage aux deux jobs :
+# les deux legs consomment donc le meme trivy.json, octet pour octet. La seule
+# difference entre eux est le fichier de contexte. Le seuil est identique des
+# deux cotes, volontairement : si on le bougeait, la demo ne prouverait rien.
+name: demo
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  SCAN_IMAGE: python:3.12-slim
+  TRIVY_VERSION: v0.69.3
+  VENS_VERSION: v0.4.0
+  # Un seul SBOM : c'est la meme image des deux cotes.
+  SBOM_SERIAL: urn:uuid:8a33e249-236a-487c-b5ed-cda48f58943c
+  FAIL_ON: high
+
+jobs:
+  scan:
+    name: Scan (une seule fois)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Trivy ${{ env.TRIVY_VERSION }}
+        id: trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="${RUNNER_TEMP}/trivy-bin"
+          mkdir -p "${bin_dir}"
+          cd "${bin_dir}"
+          ver="${TRIVY_VERSION#v}"
+          tarball="trivy_${ver}_Linux-64bit.tar.gz"
+          base="https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "${tarball}" "${base}/${tarball}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o checksums.txt "${base}/trivy_${ver}_checksums.txt"
+          grep -F "${tarball}" checksums.txt | shasum -a 256 -c -
+          tar -xzf "${tarball}" trivy
+          chmod +x trivy
+          echo "bin=${bin_dir}/trivy" >> "${GITHUB_OUTPUT}"
+
+      - name: Scan ${{ env.SCAN_IMAGE }}
+        shell: bash
+        env:
+          TRIVY_BIN: ${{ steps.trivy.outputs.bin }}
+        run: |
+          set -euo pipefail
+          "${TRIVY_BIN}" image --quiet --scanners vuln --format json --output scan.json "${SCAN_IMAGE}"
+          test -s scan.json
+          total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' scan.json)
+          uniq=$(jq '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | length' scan.json)
+          echo "### Scan" >> "${GITHUB_STEP_SUMMARY}"
+          echo "\`${SCAN_IMAGE}\` : **${total} findings**, ${uniq} CVE uniques." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Ce rapport est partage tel quel aux deux jobs suivants." >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: scan
+          path: scan.json
+          retention-days: 30
+
+  score:
+    # Les deux jobs sont identiques. Seul `context.file` change.
+    name: ${{ matrix.context.label }}
+    needs: scan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        context:
+          - { label: "Application exposee", file: contexts/internet-facing.yaml, slug: internet-facing }
+          - { label: "Application interne", file: contexts/internal.yaml, slug: internal }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: scan
+
+      - name: Score avec ${{ matrix.context.file }}
+        id: vens
+        uses: venslabs/vens-action@v0.2.0
+        with:
+          version: ${{ env.VENS_VERSION }}
+          config-file: ${{ matrix.context.file }}
+          input-report: scan.json
+          input-format: trivy
+          output-vex: vex-${{ matrix.context.slug }}.cdx.json
+          enrich: true
+          output-enriched-report: enriched-${{ matrix.context.slug }}.json
+          sbom-serial-number: ${{ env.SBOM_SERIAL }}
+          llm-provider: openai
+          llm-model: gpt-5.4-mini
+          llm-api-key: ${{ secrets.OPENAI_API_KEY }}
+          fail-on-severity: ${{ env.FAIL_ON }}
+
+      - name: Distribution OWASP
+        if: always()
+        shell: bash
+        env:
+          VEX: vex-${{ matrix.context.slug }}.cdx.json
+        run: |
+          set -euo pipefail
+          test -s "${VEX}" || { echo "pas de VEX produit"; exit 0; }
+          {
+            echo "### ${{ matrix.context.label }}"
+            echo ""
+            echo "Contexte : \`${{ matrix.context.file }}\` · seuil : \`${FAIL_ON}\`"
+            echo ""
+            echo "| severite OWASP | CVE |"
+            echo "|---|---|"
+            jq -r '[.vulnerabilities[]?.ratings[]? | select(.method=="OWASP") | .severity]
+                   | group_by(.) | map({s: .[0], n: length})
+                   | sort_by(.s)
+                   | .[] | "| \(.s) | \(.n) |"' "${VEX}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: vens-${{ matrix.context.slug }}
+          path: |
+            vex-${{ matrix.context.slug }}.cdx.json
+            enriched-${{ matrix.context.slug }}.json
+          retention-days: 30
