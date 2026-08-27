@@ -7,9 +7,8 @@
 name: demo
 
 on:
+  # Lancement manuel uniquement : chaque run appelle un LLM et coute de l'argent.
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -85,7 +84,7 @@ jobs:
 
       - name: Score avec ${{ matrix.context.file }}
         id: vens
-        uses: venslabs/vens-action@v0.2.0
+        uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
         with:
           version: ${{ env.VENS_VERSION }}
           config-file: ${{ matrix.context.file }}
