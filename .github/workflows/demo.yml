@@ -6,9 +6,23 @@
 # deux cotes, volontairement : si on le bougeait, la demo ne prouverait rien.
 name: demo
 
+run-name: demo · ${{ inputs.provider }}/${{ inputs.model }} · batch ${{ inputs.batch-size }}
+
 on:
   # Lancement manuel uniquement : chaque run appelle un LLM et coute de l'argent.
   workflow_dispatch:
+    inputs:
+      provider:
+        description: Fournisseur LLM
+        type: choice
+        options: [openai, anthropic]
+        default: openai
+      model:
+        description: Modele (chaine exacte attendue par le fournisseur)
+        default: gpt-5.4-mini
+      batch-size:
+        description: CVE par requete LLM
+        default: "10"
 
 permissions:
   contents: read
@@ -94,9 +108,10 @@ jobs:
           enrich: true
           output-enriched-report: enriched-${{ matrix.context.slug }}.json
           sbom-serial-number: ${{ env.SBOM_SERIAL }}
-          llm-provider: openai
-          llm-model: gpt-5.4-mini
-          llm-api-key: ${{ secrets.OPENAI_API_KEY }}
+          llm-provider: ${{ inputs.provider }}
+          llm-model: ${{ inputs.model }}
+          llm-batch-size: ${{ inputs.batch-size }}
+          llm-api-key: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || secrets.OPENAI_API_KEY }}
           fail-on-severity: ${{ env.FAIL_ON }}
 
       - name: Distribution OWASP
@@ -110,7 +125,7 @@ jobs:
           {
             echo "### ${{ matrix.context.label }}"
             echo ""
-            echo "Contexte : \`${{ matrix.context.file }}\` · seuil : \`${FAIL_ON}\`"
+            echo "Contexte : \`${{ matrix.context.file }}\` · seuil : \`${FAIL_ON}\` · modele : \`${{ inputs.provider }}/${{ inputs.model }}\` · batch ${{ inputs.batch-size }}"
             echo ""
             echo "| severite OWASP | CVE |"
             echo "|---|---|"
