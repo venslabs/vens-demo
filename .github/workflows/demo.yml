@@ -143,6 +143,7 @@ jobs:
           input-report: scan.json
           input-format: trivy
           output-vex: vex-${{ matrix.context.slug }}.cdx.json
+          attest: true
           enrich: true
           output-enriched-report: enriched-${{ matrix.context.slug }}.json
           sbom-serial-number: ${{ env.SBOM_SERIAL }}
@@ -180,4 +181,5 @@ jobs:
           path: |
             vex-${{ matrix.context.slug }}.cdx.json
             enriched-${{ matrix.context.slug }}.json
+            ${{ steps.vens.outputs.attestation-file }}
           retention-days: 30
