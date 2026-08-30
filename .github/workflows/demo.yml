@@ -138,7 +138,10 @@ jobs:
         uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
         with:
           version: ${{ inputs.vens-ref == '' && env.VENS_VERSION || '' }}
-          bin-path: ${{ inputs.vens-ref == '' && '' || './vens' }}
+          # Written this way round on purpose: in a GitHub expression `A && B || C`
+          # falls through to C whenever B is falsy, so a branch returning '' has to
+          # be the C one or it never wins.
+          bin-path: ${{ inputs.vens-ref != '' && './vens' || '' }}
           config-file: ${{ matrix.context.file }}
           input-report: scan.json
           input-format: trivy
