@@ -23,9 +23,6 @@ on:
       batch-size:
         description: CVE par requete LLM
         default: "10"
-      vens-ref:
-        description: "Compiler vens depuis cette ref au lieu d'utiliser la release epinglee (ex: main). Vide = release."
-        default: ""
 
 permissions:
   contents: read
@@ -75,40 +72,10 @@ jobs:
           echo "\`${SCAN_IMAGE}\` : **${total} findings**, ${uniq} CVE uniques." >> "${GITHUB_STEP_SUMMARY}"
           echo "Ce rapport est partage tel quel aux deux jobs suivants." >> "${GITHUB_STEP_SUMMARY}"
 
-      # Optionnel : compiler vens depuis une ref. Sert quand un correctif n'est
-      # pas encore taggé. Fait ici pour que les deux legs partagent le meme binaire.
-      - name: Checkout vens @ ${{ inputs.vens-ref }}
-        if: inputs.vens-ref != ''
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          repository: venslabs/vens
-          ref: ${{ inputs.vens-ref }}
-          path: vens-src
-
-      - name: Build vens
-        if: inputs.vens-ref != ''
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v5.5.0
-        with:
-          go-version-file: vens-src/go.mod
-          cache-dependency-path: vens-src/go.sum
-
-      - name: go build
-        if: inputs.vens-ref != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd vens-src
-          go build -o ../vens ./cmd/vens
-          cd ..
-          ./vens --version || true
-          echo "vens compile depuis \`${{ inputs.vens-ref }}\` ($(git -C vens-src rev-parse --short HEAD))" >> "${GITHUB_STEP_SUMMARY}"
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: scan
-          path: |
-            scan.json
-            vens
+          path: scan.json
           retention-days: 30
 
   score:
@@ -129,16 +96,11 @@ jobs:
         with:
           name: scan
 
-      - name: Rendre vens executable
-        if: inputs.vens-ref != ''
-        run: chmod +x ./vens
-
       - name: Score avec ${{ matrix.context.file }}
         id: vens
         uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
         with:
-          version: ${{ inputs.vens-ref == '' && env.VENS_VERSION || '' }}
-          bin-path: ${{ inputs.vens-ref == '' && '' || './vens' }}
+          version: ${{ env.VENS_VERSION }}
           config-file: ${{ matrix.context.file }}
           input-report: scan.json
           input-format: trivy
