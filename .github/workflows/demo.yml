@@ -25,7 +25,7 @@ permissions:
 
 env:
   SCAN_IMAGE: python:3.12-slim
-  TRIVY_VERSION: v0.69.3
+  TRIVY_VERSION: v0.74.0
   VENS_VERSION: v0.5.0
   SBOM_SERIAL: urn:uuid:8a33e249-236a-487c-b5ed-cda48f58943c
   FAIL_ON: high
