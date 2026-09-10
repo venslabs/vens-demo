@@ -8,8 +8,8 @@ contexte :
 
 | Job | Contexte | Le service |
 |---|---|---|
-| Application exposée | [`contexts/internet-facing.yaml`](contexts/internet-facing.yaml) | API de paiement, frontale internet, sans WAF, données PCI-DSS |
-| Application interne | [`contexts/internal.yaml`](contexts/internal.yaml) | Batch de nuit, sous-réseau isolé, aucun port en écoute |
+| Contexte exposé | [`contexts/internet-facing.yaml`](contexts/internet-facing.yaml) | API de paiement, frontale internet, sans WAF, données PCI-DSS |
+| Contexte interne | [`contexts/internal.yaml`](contexts/internal.yaml) | Batch de nuit, sous-réseau isolé, aucun port en écoute |
 
 Le seuil (`fail-on-severity: high`) est **identique des deux côtés**. Il n'est pas
 déplacé d'un job à l'autre : si on le bougeait, la démo ne prouverait rien.
@@ -26,4 +26,5 @@ gh workflow run demo --repo <votre-fork>
 ```
 
 Chaque run publie le rapport de scan, les deux VEX et les deux rapports enrichis
-en artefacts, et affiche la distribution des sévérités OWASP dans son résumé.
+en artefacts. Le job `Comparaison` lit les deux VEX et sort un seul tableau à deux
+colonnes dans le résumé du run, plus la note de la CVE pointée par `FOCUS_CVE`.
