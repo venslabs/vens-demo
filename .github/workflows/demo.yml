@@ -29,6 +29,8 @@ env:
   VENS_VERSION: v0.5.0
   SBOM_SERIAL: urn:uuid:8a33e249-236a-487c-b5ed-cda48f58943c
   FAIL_ON: high
+  # la CVE sur laquelle on s arrete pendant la demo
+  FOCUS_CVE: CVE-2026-8376
 
 jobs:
   scan:
@@ -57,8 +59,8 @@ jobs:
       fail-fast: false
       matrix:
         context:
-          - { label: "Application exposee", file: contexts/internet-facing.yaml, slug: internet-facing }
-          - { label: "Application interne", file: contexts/internal.yaml, slug: internal }
+          - { label: "Contexte exposé", file: contexts/internet-facing.yaml, slug: internet-facing }
+          - { label: "Contexte interne", file: contexts/internal.yaml, slug: internal }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -85,20 +87,6 @@ jobs:
           llm-api-key: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || secrets.OPENAI_API_KEY }}
           fail-on-severity: ${{ env.FAIL_ON }}
 
-      # Le tableau qu'on lit a la fin du run : c'est lui qui montre que le meme
-      # scan donne deux distributions.
-      - name: Distribution OWASP
-        if: always()
-        env:
-          VEX: vex-${{ matrix.context.slug }}.cdx.json
-        run: |
-          test -s "${VEX}" || exit 0
-          echo "### ${{ matrix.context.label }} · seuil ${FAIL_ON}" >> "${GITHUB_STEP_SUMMARY}"
-          echo "| severite OWASP | CVE |" >> "${GITHUB_STEP_SUMMARY}"
-          echo "|---|---|" >> "${GITHUB_STEP_SUMMARY}"
-          jq -r '[.vulnerabilities[].ratings[] | select(.method=="OWASP").severity]
-                 | group_by(.) | .[] | "| \(.[0]) | \(length) |"' "${VEX}" >> "${GITHUB_STEP_SUMMARY}"
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: always()
         with:
@@ -108,3 +96,48 @@ jobs:
             enriched-${{ matrix.context.slug }}.json
             ${{ steps.vens.outputs.attestation-file }}
           retention-days: 30
+
+  # Un seul tableau, deux colonnes : c'est ce qu'on lit a l'ecran pendant la demo.
+  # Les deux jobs de scoring ecrivent chacun dans leur propre resume, donc la
+  # comparaison ne peut se faire que dans un job qui voit les deux VEX.
+  compare:
+    name: Comparaison
+    needs: score
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # sans ca, un run ou les deux jobs meurent avant l'upload fait echouer
+      # l'etape ici, et le garde-fou plus bas n'a jamais la main
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: vens-*
+
+      - name: Tableau cote a cote
+        run: |
+          A=vens-internet-facing/vex-internet-facing.cdx.json
+          B=vens-internal/vex-internal.cdx.json
+          if [ ! -s "${A}" ] || [ ! -s "${B}" ]; then
+            echo "VEX manquant, rien à comparer" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          n() {
+            jq -r --arg s "$2" '[.vulnerabilities[].ratings[]
+              | select(.method=="OWASP" and .severity==$s)] | length' "$1"
+          }
+          f() {
+            jq -r --arg c "${FOCUS_CVE}" '[.vulnerabilities[] | select(.id==$c)
+              | .ratings[] | select(.method=="OWASP")
+              | "\(.severity) · \(.score)/81"][0] // "absente de ce run"' "$1"
+          }
+          {
+            echo "## Même image, même scan, deux contextes · seuil \`${FAIL_ON}\`"
+            echo
+            echo "| sévérité OWASP | contexte exposé | contexte interne |"
+            echo "|---|---:|---:|"
+            for sev in critical high medium low info; do
+              echo "| \`${sev}\` | $(n "${A}" "${sev}") | $(n "${B}" "${sev}") |"
+            done
+            echo
+            echo "**${FOCUS_CVE}** · exposé : $(f "${A}") · interne : $(f "${B}")"
+          } >> "${GITHUB_STEP_SUMMARY}"
