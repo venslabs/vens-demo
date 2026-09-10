@@ -51,7 +51,6 @@ jobs:
           retention-days: 30
 
   score:
-    # Les deux jobs sont identiques. Seul `context.file` change.
     name: ${{ matrix.context.label }}
     needs: scan
     runs-on: ubuntu-latest
@@ -97,39 +96,57 @@ jobs:
             ${{ steps.vens.outputs.attestation-file }}
           retention-days: 30
 
-  # Un seul tableau, deux colonnes : c'est ce qu'on lit a l'ecran pendant la demo.
-  # Les deux jobs de scoring ecrivent chacun dans leur propre resume, donc la
-  # comparaison ne peut se faire que dans un job qui voit les deux VEX.
+  # Chaque job de scoring ecrit dans son propre resume, donc la comparaison ne
+  # peut se faire que dans un job qui voit les deux VEX.
   compare:
     name: Comparaison
     needs: score
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # sans ca, un run ou les deux jobs meurent avant l'upload fait echouer
-      # l'etape ici, et le garde-fou plus bas n'a jamais la main
+      # pas de pattern : il faut aussi scan.json pour le CVSS. continue-on-error,
+      # sinon un run sans artefact fait echouer l'etape et le garde-fou plus bas
+      # n'a jamais la main
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         continue-on-error: true
-        with:
-          pattern: vens-*
 
       - name: Tableau cote a cote
         run: |
+          S=scan/scan.json
           A=vens-internet-facing/vex-internet-facing.cdx.json
           B=vens-internal/vex-internal.cdx.json
           if [ ! -s "${A}" ] || [ ! -s "${B}" ]; then
             echo "VEX manquant, rien à comparer" >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
+
           n() {
             jq -r --arg s "$2" '[.vulnerabilities[].ratings[]
               | select(.method=="OWASP" and .severity==$s)] | length' "$1"
           }
-          f() {
-            jq -r --arg c "${FOCUS_CVE}" '[.vulnerabilities[] | select(.id==$c)
-              | .ratings[] | select(.method=="OWASP")
-              | "\(.severity) · \(.score)/81"][0] // "absente de ce run"' "$1"
+
+          owasp() {
+            jq -r --arg c "${FOCUS_CVE}" --arg l "$2" \
+              '[.vulnerabilities[] | select(.id==$c) | .ratings[]
+                | select(.method=="OWASP")
+                | "| \($l) | \(.score) / 81 | `\(.severity)` |"][0]
+               // "| \($l) | absente de ce run | |"' "$1"
           }
+
+          # $1 parmi pkg sev src score -> le champ correspondant du scan
+          cvss() {
+            jq -r --arg c "${FOCUS_CVE}" --arg f "$1" \
+              '[.Results[]?.Vulnerabilities[]? | select(.VulnerabilityID==$c)][0] as $v
+               | if $v == null then "n/a" else
+                   ((($v.CVSS // {}) | to_entries
+                     | map(select(.value.V3Score != null)) | .[0])) as $k
+                   | if   $f == "pkg"   then $v.PkgName
+                     elif $f == "sev"   then ($v.Severity | ascii_downcase)
+                     elif $f == "src"   then ($k.key // "n/a")
+                     else (($k.value.V3Score // "n/a") | tostring) end
+                 end' "${S}"
+          }
+
           {
             echo "## Même image, même scan, deux contextes · seuil \`${FAIL_ON}\`"
             echo
@@ -138,6 +155,18 @@ jobs:
             for sev in critical high medium low info; do
               echo "| \`${sev}\` | $(n "${A}" "${sev}") | $(n "${B}" "${sev}") |"
             done
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          test -s "${S}" || exit 0
+          {
             echo
-            echo "**${FOCUS_CVE}** · exposé : $(f "${A}") · interne : $(f "${B}")"
+            echo "### ${FOCUS_CVE} · $(cvss pkg)"
+            echo
+            echo "| | score | sévérité |"
+            echo "|---|---:|---|"
+            echo "| CVSS de base, source \`$(cvss src)\` | $(cvss score) / 10 | \`$(cvss sev)\` |"
+            owasp "${A}" "OWASP, contexte exposé"
+            owasp "${B}" "OWASP, contexte interne"
+            echo
+            echo "Deux échelles différentes, ce n'est pas une conversion."
           } >> "${GITHUB_STEP_SUMMARY}"
