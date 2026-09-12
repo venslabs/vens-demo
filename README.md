@@ -26,5 +26,5 @@ gh workflow run demo --repo <votre-fork>
 ```
 
 Chaque run publie le rapport de scan, les deux VEX et les deux rapports enrichis
-en artefacts. Le job `Comparaison` lit les deux VEX et sort un seul tableau à deux
-colonnes dans le résumé du run, plus la note de la CVE pointée par `FOCUS_CVE`.
+en artefacts. Chaque job logge le score de chaque CVE au fil de l'eau
+(`msg="Scored vulnerability" vuln=... score=... severity=... vector=...`).
