@@ -29,8 +29,6 @@ env:
   VENS_VERSION: v0.5.0
   SBOM_SERIAL: urn:uuid:8a33e249-236a-487c-b5ed-cda48f58943c
   FAIL_ON: high
-  # la CVE sur laquelle on s arrete pendant la demo
-  FOCUS_CVE: CVE-2026-8376
 
 jobs:
   scan:
@@ -95,78 +93,3 @@ jobs:
             enriched-${{ matrix.context.slug }}.json
             ${{ steps.vens.outputs.attestation-file }}
           retention-days: 30
-
-  # Chaque job de scoring ecrit dans son propre resume, donc la comparaison ne
-  # peut se faire que dans un job qui voit les deux VEX.
-  compare:
-    name: Comparaison
-    needs: score
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      # pas de pattern : il faut aussi scan.json pour le CVSS. continue-on-error,
-      # sinon un run sans artefact fait echouer l'etape et le garde-fou plus bas
-      # n'a jamais la main
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
-        continue-on-error: true
-
-      - name: Tableau cote a cote
-        run: |
-          S=scan/scan.json
-          A=vens-internet-facing/vex-internet-facing.cdx.json
-          B=vens-internal/vex-internal.cdx.json
-          if [ ! -s "${A}" ] || [ ! -s "${B}" ]; then
-            echo "VEX manquant, rien à comparer" >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-
-          n() {
-            jq -r --arg s "$2" '[.vulnerabilities[].ratings[]
-              | select(.method=="OWASP" and .severity==$s)] | length' "$1"
-          }
-
-          owasp() {
-            jq -r --arg c "${FOCUS_CVE}" --arg l "$2" \
-              '[.vulnerabilities[] | select(.id==$c) | .ratings[]
-                | select(.method=="OWASP")
-                | "| \($l) | \(.score) / 81 | `\(.severity)` |"][0]
-               // "| \($l) | absente de ce run | |"' "$1"
-          }
-
-          # $1 parmi pkg sev src score -> le champ correspondant du scan
-          cvss() {
-            jq -r --arg c "${FOCUS_CVE}" --arg f "$1" \
-              '[.Results[]?.Vulnerabilities[]? | select(.VulnerabilityID==$c)][0] as $v
-               | if $v == null then "n/a" else
-                   ((($v.CVSS // {}) | to_entries
-                     | map(select(.value.V3Score != null)) | .[0])) as $k
-                   | if   $f == "pkg"   then $v.PkgName
-                     elif $f == "sev"   then ($v.Severity | ascii_downcase)
-                     elif $f == "src"   then ($k.key // "n/a")
-                     else (($k.value.V3Score // "n/a") | tostring) end
-                 end' "${S}"
-          }
-
-          {
-            echo "## Même image, même scan, deux contextes · seuil \`${FAIL_ON}\`"
-            echo
-            echo "| sévérité OWASP | contexte exposé | contexte interne |"
-            echo "|---|---:|---:|"
-            for sev in critical high medium low info; do
-              echo "| \`${sev}\` | $(n "${A}" "${sev}") | $(n "${B}" "${sev}") |"
-            done
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-          test -s "${S}" || exit 0
-          {
-            echo
-            echo "### ${FOCUS_CVE} · $(cvss pkg)"
-            echo
-            echo "| | score | sévérité |"
-            echo "|---|---:|---|"
-            echo "| CVSS de base, source \`$(cvss src)\` | $(cvss score) / 10 | \`$(cvss sev)\` |"
-            owasp "${A}" "OWASP, contexte exposé"
-            owasp "${B}" "OWASP, contexte interne"
-            echo
-            echo "Deux échelles différentes, ce n'est pas une conversion."
-          } >> "${GITHUB_STEP_SUMMARY}"
