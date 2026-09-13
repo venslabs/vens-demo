@@ -25,5 +25,4 @@ context:
     antivirus: false
     segmentation: true
     zero_trust: false
-
-  notes: "Internet-facing REST API behind a WAF and a CDN. Terminates TLS, accepts unauthenticated traffic on the payment initiation route, parses attacker-controlled JSON, and holds cardholder data plus customer PII. Reachable from the public internet on port 443."
+  notes: "Accepts unauthenticated traffic on the payment initiation route and parses attacker-controlled JSON."
