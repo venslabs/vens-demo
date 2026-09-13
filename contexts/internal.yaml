@@ -13,15 +13,15 @@ context:
 
   audit_requirement: "low"
 
-  # Segmente, derriere le perimetre, avec detection.
+  # Pas de WAF ni d anti-DDoS : ce job n ecoute sur aucun port.
   controls:
-    waf: true
-    ddos_protection: true
+    waf: false
+    ddos_protection: false
     ids: true
     siem: true
     edr: true
-    antivirus: true
+    antivirus: false
     segmentation: true
-    zero_trust: true
+    zero_trust: false
 
   notes: "Batch job on an isolated internal subnet, no ingress at all and no listening socket. Started by the scheduler once a night, reads a pre-validated CSV from an internal bucket, writes an aggregate to a private database, then exits. No user input, no network service, unreachable from outside the cluster."
