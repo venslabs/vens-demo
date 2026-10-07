@@ -1,0 +1,88 @@
+{
+  "why": "Frozen because the GitHub Actions artifacts expire after 30 days and a re-run cannot reproduce them: the workflow pins the mutable tag python:3.12-slim, which has already moved, and nothing pins the Trivy database.",
+  "archived_on": "2026-10-07",
+  "run": {
+    "id": 35834441515,
+    "number": 23,
+    "name": "demo · openai/gpt-5.4-mini · batch 10",
+    "url": "https://github.com/venslabs/vens-demo/actions/runs/35834441515",
+    "event": "workflow_dispatch",
+    "head_sha": "f78d398c04146e0520cd0b309b9c81e0e436cfea",
+    "started": "2026-09-23T07:57:31Z",
+    "conclusion": "failure",
+    "conclusion_note": "The 'Contexte exposé' job failed on purpose: the security gate tripped with FAIL_ON=high and '9 vulnerability(ies) at or above severity high', exit code 1. Scoring itself completed — both VEX files carry 74 of 74 CVEs with an OWASP rating. The 'Contexte interne' job passed. That contrast is the point of the demo.",
+    "artifact_ids": {
+      "scan": 10739100017,
+      "vens-internal": 10738233161,
+      "vens-internet-facing": 10737854659
+    },
+    "artifacts_expired_on": "2026-10-23T07:57:44Z"
+  },
+  "inputs": {
+    "image_tag": "python:3.12-slim",
+    "image_digest": "python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9",
+    "image_id": "sha256:9e87977b867847e186d066f531ef783b006d582a985c341c269446088d90f2c4",
+    "os": "debian 13.7",
+    "trivy_schema_version": 2,
+    "scan_created_at": "2026-09-23T07:57:44Z",
+    "contexts": [
+      "contexts/internal.yaml",
+      "contexts/internet-facing.yaml"
+    ]
+  },
+  "producer": {
+    "vens_version": "v0.5.0",
+    "source": "metadata.tools of each VEX",
+    "llm_model": "openai/gpt-5.4-mini",
+    "llm_batch_size": 10,
+    "batch_size_note": "The batch size is recorded because the published score of a multi-component CVE depends on it — venslabs/vens#327."
+  },
+  "contents": {
+    "scan_rows": 162,
+    "scan_distinct_cves": 74,
+    "vex_spec_version": "1.6",
+    "vex_internal": {
+      "timestamp": "2026-09-23T08:00:01Z",
+      "vulnerabilities": 74,
+      "with_owasp_rating": 74
+    },
+    "vex_internet_facing": {
+      "timestamp": "2026-09-23T08:00:00Z",
+      "vulnerabilities": 74,
+      "with_owasp_rating": 74
+    }
+  },
+  "predates": {
+    "venslabs/vens#322": "Intrusion Detection is still inverted here. The vectors carry ID = 9 - vulnerability (ID:2, ID:3, ID:5 appear in the run log), so this run is the 'before' for any comparison across that fix."
+  },
+  "files": {
+    "scan/scan.json": {
+      "bytes": 834891,
+      "sha256": "afc7d20702f270e4dbd43579c67ea295064f42183a3369baf9d4734a91153514"
+    },
+    "vens-internal/enriched-internal.json": {
+      "bytes": 863133,
+      "sha256": "0d8bf4da640efe75d6c9e0066217dc7dcc02c0493fa17d620fb16b9899ff481a"
+    },
+    "vens-internal/vex-internal.attestation.cdx.json": {
+      "bytes": 276265,
+      "sha256": "470ef3d654ca7b4d55e32746d4dab4bcf962940685a187529fbaef71dfe9c737"
+    },
+    "vens-internal/vex-internal.cdx.json": {
+      "bytes": 58822,
+      "sha256": "8fd2fb2f856283674e5c1dde1b4e696aacaed3bb7b9a75415c95cc42473c9316"
+    },
+    "vens-internet-facing/enriched-internet-facing.json": {
+      "bytes": 863286,
+      "sha256": "3e7847c2ee5e1194d5cb1348292f016f92363af2cf74b5d7a46a39db9292cda4"
+    },
+    "vens-internet-facing/vex-internet-facing.attestation.cdx.json": {
+      "bytes": 278152,
+      "sha256": "40a92ccf446a568342e3eb55895713de43d48ae116a5449afd935b4bab3651c1"
+    },
+    "vens-internet-facing/vex-internet-facing.cdx.json": {
+      "bytes": 58927,
+      "sha256": "febdadb99400260ec80b6958172398dd1b7e78545d303fbe6a5b152edf2440ab"
+    }
+  }
+}
