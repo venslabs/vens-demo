@@ -1,0 +1,128 @@
+# Score an ARCHIVED scan, several times, on a chosen model.
+#
+# demo.yml scans the image first, so two of its runs are never comparable: the tag
+# python:3.12-slim moves and the Trivy DB is rebuilt daily. This workflow skips the scan
+# and reads a frozen scan.json out of runs/, so the only thing that changes between runs
+# is the model and the replicate. That is what venslabs/vens#310 step 5 measures.
+#
+# No security gate here: a gate failure would kill the later replicates.
+name: baseline
+
+run-name: baseline · ${{ inputs.archived-run }} · ${{ inputs.provider }}/${{ inputs.model }} · batch ${{ inputs.batch-size }} · x${{ inputs.replicates }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      archived-run:
+        description: Folder under runs/ holding the frozen scan
+        default: "2026-09-23"
+      provider:
+        type: choice
+        options: [openai, anthropic]
+        default: anthropic
+      model:
+        default: claude-sonnet-5
+      batch-size:
+        description: Keep this equal to the run you are comparing against — the score of a multi-component CVE depends on it (venslabs/vens#327)
+        default: "10"
+      replicates:
+        description: Runs per context. The seed is not a reproducibility guarantee, so one run says nothing.
+        default: "3"
+
+permissions:
+  contents: read
+
+env:
+  VENS_VERSION: v0.5.0
+  SBOM_SERIAL: urn:uuid:8a33e249-236a-487c-b5ed-cda48f58943c
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      replicates: ${{ steps.n.outputs.list }}
+    steps:
+      - id: n
+        run: |
+          n="${{ inputs.replicates }}"
+          case "$n" in ''|*[!0-9]*) echo "::error::replicates must be a positive integer"; exit 1 ;; esac
+          [ "$n" -ge 1 ] && [ "$n" -le 10 ] || { echo "::error::replicates must be between 1 and 10"; exit 1; }
+          echo "list=$(seq 1 "$n" | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  score:
+    name: ${{ matrix.context.slug }} · run ${{ matrix.replicate }}
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        replicate: ${{ fromJSON(needs.plan.outputs.replicates) }}
+        context:
+          - { file: contexts/internet-facing.yaml, slug: internet-facing }
+          - { file: contexts/internal.yaml, slug: internal }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Use the frozen scan
+        run: |
+          src="runs/${{ inputs.archived-run }}/scan/scan.json"
+          test -f "$src" || { echo "::error::$src not found — archive the run first"; exit 1; }
+          cp "$src" scan.json
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("scan.json"))
+          digest = (d.get("Metadata", {}).get("RepoDigests") or [""])[0]
+          rows = [v for r in d.get("Results", []) or [] for v in r.get("Vulnerabilities", []) or []]
+          line = f"frozen scan: {d.get('ArtifactName')} @ {digest} — {len(rows)} rows, {len({v['VulnerabilityID'] for v in rows})} CVEs"
+          print(line)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(line + "\n")
+          PY
+
+      - name: Score ${{ matrix.context.file }}
+        id: vens
+        uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
+        with:
+          version: ${{ env.VENS_VERSION }}
+          config-file: ${{ matrix.context.file }}
+          input-report: scan.json
+          input-format: trivy
+          output-vex: vex-${{ matrix.context.slug }}.cdx.json
+          output-enriched-report: enriched-${{ matrix.context.slug }}.json
+          enrich: true
+          attest: true
+          sbom-serial-number: ${{ env.SBOM_SERIAL }}
+          llm-provider: ${{ inputs.provider }}
+          llm-model: ${{ inputs.model }}
+          llm-batch-size: ${{ inputs.batch-size }}
+          llm-api-key: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || secrets.OPENAI_API_KEY }}
+          fail-on-severity: ""
+
+      - name: Record what produced this
+        run: |
+          cat > provenance.json <<JSON
+          {
+            "archived_scan": "runs/${{ inputs.archived-run }}/scan/scan.json",
+            "context": "${{ matrix.context.file }}",
+            "replicate": ${{ matrix.replicate }},
+            "provider": "${{ inputs.provider }}",
+            "model": "${{ inputs.model }}",
+            "llm_batch_size": ${{ inputs.batch-size }},
+            "vens_version": "${{ env.VENS_VERSION }}",
+            "run_id": ${{ github.run_id }},
+            "head_sha": "${{ github.sha }}"
+          }
+          JSON
+          cat provenance.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: baseline-${{ inputs.model }}-${{ matrix.context.slug }}-r${{ matrix.replicate }}
+          path: |
+            vex-${{ matrix.context.slug }}.cdx.json
+            enriched-${{ matrix.context.slug }}.json
+            provenance.json
+            ${{ steps.vens.outputs.attestation-file }}
+          retention-days: 90
