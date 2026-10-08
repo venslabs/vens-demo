@@ -1,9 +1,20 @@
-# Score an ARCHIVED scan, several times, on a chosen model.
+# A measurement bench: score an ARCHIVED scan with a chosen model, batch size, replicate
+# count and vens revision, and keep the artefacts for 90 days.
 #
 # demo.yml scans the image first, so two of its runs are never comparable: the tag
-# python:3.12-slim moves and the Trivy DB is rebuilt daily. This workflow skips the scan
-# and reads a frozen scan.json out of runs/, so the only thing that changes between runs
-# is the model and the replicate. That is what venslabs/vens#310 step 5 measures.
+# python:3.12-slim moves and the Trivy DB is rebuilt daily. This one skips the scan and
+# reads a frozen scan.json out of runs/, so the only things that change between two runs
+# are the ones you chose on the form. Everything else is held.
+#
+# What it is for, so far:
+#   - the cross-model and run-to-run spread of venslabs/vens#310 step 5
+#   - the magnitude of the batch-size defect, #327: dispatch at batch 1 and at batch 10
+#   - checking a fix landed, once vens#336 lets a current Anthropic model run at all
+#   - regression: did a prompt or code change move the scores, and by how much
+#
+# Two rules it exists to enforce. The scan is frozen, so the input never drifts. And the
+# vens revision is recorded in provenance.json, because main moves — pass a commit sha in
+# vens-ref to hold a whole campaign on one revision.
 #
 # No security gate here: a gate failure would kill the later replicates.
 name: baseline
