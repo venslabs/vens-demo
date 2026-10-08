@@ -1,14 +1,25 @@
-# Score an ARCHIVED scan, several times, on a chosen model.
+# A measurement bench: score an ARCHIVED scan with a chosen model, batch size, replicate
+# count and vens revision, and keep the artefacts for 90 days.
 #
 # demo.yml scans the image first, so two of its runs are never comparable: the tag
-# python:3.12-slim moves and the Trivy DB is rebuilt daily. This workflow skips the scan
-# and reads a frozen scan.json out of runs/, so the only thing that changes between runs
-# is the model and the replicate. That is what venslabs/vens#310 step 5 measures.
+# python:3.12-slim moves and the Trivy DB is rebuilt daily. This one skips the scan and
+# reads a frozen scan.json out of runs/, so the only things that change between two runs
+# are the ones you chose on the form. Everything else is held.
+#
+# What it is for, so far:
+#   - the cross-model and run-to-run spread of venslabs/vens#310 step 5
+#   - the magnitude of the batch-size defect, #327: dispatch at batch 1 and at batch 10
+#   - checking a fix landed, once vens#336 lets a current Anthropic model run at all
+#   - regression: did a prompt or code change move the scores, and by how much
+#
+# Two rules it exists to enforce. The scan is frozen, so the input never drifts. And the
+# vens revision is recorded in provenance.json, because main moves — pass a commit sha in
+# vens-ref to hold a whole campaign on one revision.
 #
 # No security gate here: a gate failure would kill the later replicates.
 name: baseline
 
-run-name: baseline · ${{ inputs.archived-run }} · ${{ inputs.provider }}/${{ inputs.model }} · batch ${{ inputs.batch-size }} · x${{ inputs.replicates }}
+run-name: baseline · ${{ inputs.archived-run }} · ${{ inputs.provider }}/${{ inputs.model }} · batch ${{ inputs.batch-size }} · x${{ inputs.replicates }} · vens ${{ inputs.vens-ref }}
 
 on:
   workflow_dispatch:
@@ -28,12 +39,18 @@ on:
       replicates:
         description: Runs per context. The seed is not a reproducibility guarantee, so one run says nothing.
         default: "3"
+      vens-ref:
+        description: Branch or commit of venslabs/vens to build. Leave on main to take the tip; pass a commit sha to pin a whole measurement campaign to one revision.
+        default: main
 
 permissions:
   contents: read
 
 env:
-  VENS_VERSION: v0.5.0
+  # Build from main rather than pin a tag: v0.5.0 is dated 28/08/2026 and two output fixes
+  # have been merged since without a release — #307 (keep a score of 0 in the VEX) and #324
+  # (the Intrusion Detection sign). A pinned tag measures the pre-fix scoring path.
+  # main moves, so pass a commit sha in vens-ref to hold a whole campaign on one revision.
   SBOM_SERIAL: urn:uuid:8a33e249-236a-487c-b5ed-cda48f58943c
 
 jobs:
@@ -64,6 +81,23 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+
+      - name: Build vens from ${{ inputs.vens-ref }}
+        id: build
+        env:
+          REF: ${{ inputs.vens-ref }}
+        run: |
+          git clone --filter=blob:none https://github.com/venslabs/vens.git /tmp/vens
+          git -C /tmp/vens checkout --detach "${REF}"
+          sha=$(git -C /tmp/vens rev-parse HEAD)
+          (cd /tmp/vens && go build -o /tmp/vens-bin ./cmd/vens)
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "built venslabs/vens \`${REF}\` at \`${sha}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::vens built at ${sha}"
+
       - name: Use the frozen scan
         run: |
           src="runs/${{ inputs.archived-run }}/scan/scan.json"
@@ -84,7 +118,7 @@ jobs:
         id: vens
         uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
         with:
-          version: ${{ env.VENS_VERSION }}
+          bin-path: /tmp/vens-bin
           config-file: ${{ matrix.context.file }}
           input-report: scan.json
           input-format: trivy
@@ -109,7 +143,8 @@ jobs:
             "provider": "${{ inputs.provider }}",
             "model": "${{ inputs.model }}",
             "llm_batch_size": ${{ inputs.batch-size }},
-            "vens_version": "${{ env.VENS_VERSION }}",
+            "vens_ref": "${{ inputs.vens-ref }}",
+            "vens_sha": "${{ steps.build.outputs.sha }}",
             "run_id": ${{ github.run_id }},
             "head_sha": "${{ github.sha }}"
           }
