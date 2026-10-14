@@ -94,7 +94,9 @@ jobs:
           git clone --filter=blob:none https://github.com/venslabs/vens.git /tmp/vens
           git -C /tmp/vens checkout --detach "${REF}"
           sha=$(git -C /tmp/vens rev-parse HEAD)
-          (cd /tmp/vens && go build -o /tmp/vens-bin ./cmd/vens)
+          # vens-action puts bin-path's directory on PATH and calls `vens`, so the binary must be named vens.
+          mkdir -p /tmp/vens-bin
+          (cd /tmp/vens && go build -o /tmp/vens-bin/vens ./cmd/vens)
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "built venslabs/vens \`${REF}\` at \`${sha}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::vens built at ${sha}"
@@ -119,7 +121,7 @@ jobs:
         id: vens
         uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
         with:
-          bin-path: /tmp/vens-bin
+          bin-path: /tmp/vens-bin/vens
           config-file: ${{ matrix.context.file }}
           input-report: scan.json
           input-format: trivy
