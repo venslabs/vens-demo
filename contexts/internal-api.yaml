@@ -1,0 +1,26 @@
+# Service C : la MEME image, deployee en API interne.
+project:
+  name: "stock-api"
+  description: "Internal REST API that warehouse and support tools query for stock levels"
+
+context:
+  exposure: "internal"
+  data_sensitivity: "medium"
+  business_criticality: "medium"
+  availability_requirement: "medium"
+
+  compliance_requirements: []
+
+  audit_requirement: "medium"
+
+  # Pas de WAF ni d anti-DDoS : le service n est joignable que depuis le reseau interne.
+  controls:
+    waf: false
+    ddos_protection: false
+    ids: true
+    siem: true
+    edr: true
+    antivirus: false
+    segmentation: true
+    zero_trust: false
+  notes: "Listens on HTTP on the corporate network only: reachable from every employee workstation and internal service, no route from the internet. Callers are not authenticated, so any host on the corporate network can send requests, and the service parses their JSON."
