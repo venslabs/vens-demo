@@ -118,23 +118,62 @@ jobs:
           PY
 
       - name: Score ${{ matrix.context.file }}
+        # vens is called directly rather than through vens-action v0.2.0, which has no debug-dir
+        # input: every call's prompts and response are archived (venslabs/vens#359, done in vens by #373).
+        # vens reads the model from OPENAI_MODEL / ANTHROPIC_MODEL (pkg/llm/llm.go:106,110) and falls back
+        # to its default when the variable is empty; the check below asserts the model it attested.
+        # No severity gate: `vens generate` has no severity option and exits non-zero only on an error;
+        # the gate lived in vens-action, which this job set to never fail (fail-on-severity: "").
         id: vens
-        uses: venslabs/vens-action@06d3eb97fb0c2040e95f3bea271d0aeb2fd00c76  # v0.2.0
-        with:
-          bin-path: /tmp/vens-bin/vens
-          config-file: ${{ matrix.context.file }}
-          input-report: scan.json
-          input-format: trivy
-          output-vex: vex-${{ matrix.context.slug }}.cdx.json
-          output-enriched-report: enriched-${{ matrix.context.slug }}.json
-          enrich: true
-          attest: true
-          sbom-serial-number: ${{ env.SBOM_SERIAL }}
-          llm-provider: ${{ inputs.provider }}
-          llm-model: ${{ inputs.model }}
-          llm-batch-size: ${{ inputs.batch-size }}
-          llm-api-key: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || secrets.OPENAI_API_KEY }}
-          fail-on-severity: ""
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+          BATCH: ${{ inputs.batch-size }}
+          CONFIG: ${{ matrix.context.file }}
+          SLUG: ${{ matrix.context.slug }}
+          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+        run: |
+          set -euo pipefail
+          case "$PROVIDER" in
+            openai) export OPENAI_MODEL="$MODEL" ;;
+            anthropic) export ANTHROPIC_MODEL="$MODEL" ;;
+          esac
+          /tmp/vens-bin/vens generate --config-file "$CONFIG" --llm "$PROVIDER" --llm-batch-size "$BATCH" \
+            --input-format trivy --sbom-serial-number "$SBOM_SERIAL" --sbom-version 1 --attest \
+            --debug-dir calls scan.json "vex-$SLUG.cdx.json"
+          /tmp/vens-bin/vens enrich --vex "vex-$SLUG.cdx.json" --output "enriched-$SLUG.json" scan.json
+
+      - name: Check that every call's prompts and response are archived, from the dispatched model
+        # The archive holds each call's system prompt, human prompt and response text, not the serialized
+        # HTTP body: the body's other fields are fixed by the vens commit, the provider and the model.
+        env:
+          SLUG: ${{ matrix.context.slug }}
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          python3 - <<'PY'
+          import glob, hashlib, json, os
+          slug = os.environ["SLUG"]
+          att = json.load(open(f"vex-{slug}.attestation.cdx.json"))
+          ev = [{x["name"]: x["contents"]["attachment"]["content"] for x in e["data"]}
+                for e in att["declarations"]["evidence"]]
+          bad = sorted({(e["provider"], e["model"]) for e in ev} - {(os.environ["PROVIDER"], os.environ["MODEL"])})
+          assert not bad, f"attested provider/model {bad}, dispatched {os.environ['PROVIDER']}/{os.environ['MODEL']}"
+          want = [e["prompt_hash"] for e in ev]
+          runs = glob.glob("calls/run-*")
+          assert len(runs) == 1, f"expected one run folder under calls/, found {runs}"
+          pairs = sorted(p[: -len(".system.prompt")] for p in glob.glob(runs[0] + "/batch-*.system.prompt"))
+          missing = [os.path.basename(p) for p in pairs
+                     if not os.path.exists(p + ".human.prompt") or not os.path.exists(p + ".response")]
+          assert not missing, f"calls without their human prompt or response (a failed or truncated call): {missing}"
+          got = [hashlib.sha256((open(p + ".system.prompt", encoding="utf-8").read() + "\n\n"
+                                 + open(p + ".human.prompt", encoding="utf-8").read()).encode()).hexdigest()
+                 for p in pairs]
+          assert got == want, f"{len(got)} archived calls against {len(want)} attested calls, or a hash differs"
+          print(f"{len(got)} calls by {os.environ['PROVIDER']}/{os.environ['MODEL']} archived: prompts and response "
+                f"each, every prompt pair equal to its attested prompt_hash, in order")
+          PY
 
       - name: Record what produced this
         run: |
@@ -148,6 +187,8 @@ jobs:
             "llm_batch_size": ${{ inputs.batch-size }},
             "vens_ref": "${{ inputs.vens-ref }}",
             "vens_sha": "${{ steps.build.outputs.sha }}",
+            "run_attempt": ${{ github.run_attempt }},
+            "calls": "calls/run-*/batch-NNNNN.{system.prompt,human.prompt,response}",
             "run_id": ${{ github.run_id }},
             "head_sha": "${{ github.sha }}"
           }
@@ -157,10 +198,12 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: always()
         with:
-          name: baseline-${{ inputs.model }}-${{ matrix.context.slug }}-r${{ matrix.replicate }}
+          # One artefact per attempt, so a failed attempt's files are kept beside its replacement's.
+          name: baseline-${{ inputs.model }}-${{ matrix.context.slug }}-r${{ matrix.replicate }}-a${{ github.run_attempt }}
           path: |
             vex-${{ matrix.context.slug }}.cdx.json
             enriched-${{ matrix.context.slug }}.json
             provenance.json
-            ${{ steps.vens.outputs.attestation-file }}
+            vex-${{ matrix.context.slug }}.attestation.cdx.json
+            calls/
           retention-days: 90
