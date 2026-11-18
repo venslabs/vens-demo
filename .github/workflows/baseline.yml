@@ -71,6 +71,7 @@ jobs:
       - id: n
         env:
           REPLICATES: ${{ inputs.replicates }}
+          BATCH: ${{ inputs.batch-size }}
           PROVIDER: ${{ inputs.provider }}
           ARM: ${{ inputs.arm }}
           DISPATCH_ID: ${{ inputs.dispatch-id }}
@@ -82,6 +83,7 @@ jobs:
         run: |
           n="$REPLICATES"
           case "$n" in ''|*[!0-9]*) echo "::error::replicates must be a positive integer"; exit 1 ;; esac
+          case "$BATCH" in ''|0*|*[!0-9]*) echo "::error::batch-size must be a positive integer"; exit 1 ;; esac
           [ "$n" -ge 1 ] && [ "$n" -le 10 ] || { echo "::error::replicates must be between 1 and 10"; exit 1; }
           case "$ARM" in before|after) ;; *) echo "::error::arm must be before or after"; exit 1 ;; esac
           case "$DISPATCH_ID" in *[!A-Za-z0-9._-]*) echo "::error::dispatch-id takes letters, digits, '.', '_' and '-' only"; exit 1 ;; esac
@@ -174,11 +176,15 @@ jobs:
         run: |
           set -euo pipefail
           now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-          # Rewritten whole, so a kill mid-write leaves the record as it was.
-          record() { jq "$@" attempt.json > attempt.json.tmp && mv attempt.json.tmp attempt.json; }
+          # Rewritten whole through a file of its own, so a kill mid-write leaves the record as it was.
+          record() {
+            local tmp
+            tmp=$(mktemp attempt.json.XXXXXX) && jq "$@" attempt.json > "$tmp" && mv "$tmp" attempt.json
+          }
           stop() { record --arg e "$1" '.setup_error = $e'; echo "::error::$1"; exit 1; }
 
           binary=$(sha256sum "$VENS" | cut -d' ' -f1)
+          tmp=$(mktemp attempt.json.XXXXXX)
           jq -n --arg arm "$ARM" --arg provider "$PROVIDER" --arg model "$MODEL" --arg batch "$BATCH" \
             --arg ref "$VENS_REF" --arg sha "$VENS_SHA" --arg binary "$binary" \
             --argjson run_id "$GITHUB_RUN_ID" --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
@@ -189,8 +195,8 @@ jobs:
               vens_binary_sha256: $binary, run_id: $run_id, run_attempt: $run_attempt, job: $job,
               context: $context, replicate: $replicate, archived_scan: $scan, config: $config, setup_error: null,
               generate: {started_at: null, ended_at: null, exit_status: null, log_complete: null},
-              enrich: null, archive_check: null, provenance: null}' > attempt.json.tmp
-          mv attempt.json.tmp attempt.json
+              enrich: null, archive_check: null, provenance: null}' > "$tmp"
+          mv "$tmp" attempt.json
 
           case "$PROVIDER" in
             openai) export OPENAI_MODEL="$MODEL"; key="$OPENAI_API_KEY" ;;
@@ -200,11 +206,10 @@ jobs:
           if [ "$PROVIDER" != mock ] && [ -z "$key" ]; then
             stop "secret $(echo "${PROVIDER}_API_KEY_${ARM}" | tr '[:lower:]' '[:upper:]') is not set: each arm runs on its own key"
           fi
-          case "$BATCH" in ''|*[!0-9]*) stop "batch-size must be a positive integer" ;; esac
-          [ "$BATCH" -ge 1 ] || stop "batch-size must be a positive integer"
+          case "$BATCH" in ''|0*|*[!0-9]*) stop "batch-size must be a positive integer" ;; esac
 
           # The arm's key is cut out of vens's stderr before anything stores it: GitHub masks the job log, not
-          # the artefact.
+          # the artefact. Only the key's literal bytes match; an encoded or partial copy of it would pass.
           redact='import os, sys
           key = os.environ["KEY"].encode()
           for line in sys.stdin.buffer:
@@ -213,18 +218,23 @@ jobs:
           record --arg t "$(now)" '.generate.started_at = $t'
           exec 3>&1
           set +e
-          "$VENS" generate --config-file "$CONFIG" --llm "$PROVIDER" --llm-batch-size "$BATCH" \
-            --input-format trivy --sbom-serial-number "$SBOM_SERIAL" --sbom-version 1 --attest \
-            --debug-dir calls scan.json "vex-$SLUG.cdx.json" 2>&1 1>&3 \
-            | KEY="$key" python3 -c "$redact" | tee "vens-$SLUG.log" >&2
+          # generate's exit status and end are recorded as soon as it returns, whatever the logger does after.
+          {
+            "$VENS" generate --config-file "$CONFIG" --llm "$PROVIDER" --llm-batch-size "$BATCH" \
+              --input-format trivy --sbom-serial-number "$SBOM_SERIAL" --sbom-version 1 --attest \
+              --debug-dir calls scan.json "vex-$SLUG.cdx.json" 2>&1 1>&3
+            status=$?
+            record --arg t "$(now)" --argjson s "$status" '.generate += {ended_at: $t, exit_status: $s}'
+            exit "$status"
+          } | KEY="$key" python3 -c "$redact" | tee "vens-$SLUG.log" >&2
           statuses=("${PIPESTATUS[@]}")
           set -e
           status=${statuses[0]}
           # The log is whole only if the redaction and tee both ended cleanly; the archive check requires it.
           if [ "${statuses[1]}" -eq 0 ] && [ "${statuses[2]}" -eq 0 ]; then log=true; else log=false; fi
-          # If this write fails the step stops here, no exit status recorded: the attempt fails closed.
+          # If a write fails the step stops here and the attempt fails closed.
           record --arg t "$(now)" --argjson s "$status" --argjson log "$log" \
-            '.generate += {ended_at: $t, exit_status: $s, log_complete: $log}'
+            '.generate.ended_at //= $t | .generate.exit_status //= $s | .generate.log_complete = $log'
           [ "$status" -eq 0 ] || exit "$status"
 
           record --arg t "$(now)" '.enrich = {started_at: $t, ended_at: null, exit_status: null}'
@@ -299,9 +309,10 @@ jobs:
         run: |
           [ -f attempt.json ] || exit 0
           if [ -f provenance.json ]; then provenance=true; else provenance=false; fi
+          tmp=$(mktemp attempt.json.XXXXXX)
           jq --arg check "$ARCHIVE_CHECK" --argjson provenance "$provenance" \
-            '.archive_check = $check | .provenance = $provenance' attempt.json > attempt.json.tmp
-          mv attempt.json.tmp attempt.json
+            '.archive_check = $check | .provenance = $provenance' attempt.json > "$tmp"
+          mv "$tmp" attempt.json
           cat attempt.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
