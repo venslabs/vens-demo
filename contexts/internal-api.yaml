@@ -1,4 +1,6 @@
 # Service C : la MEME image, deployee en API interne.
+schema_version: 2
+
 project:
   name: "stock-api"
   description: "Internal REST API that warehouse and support tools query for stock levels"
@@ -24,3 +26,13 @@ context:
     segmentation: true
     zero_trust: false
   notes: "Listens on HTTP on the corporate network only: reachable from every employee workstation and internal service, no route from the internet. Callers are not authenticated, so any host on the corporate network can send requests, and the service parses their JSON."
+
+  # Schema 2. listener vient des notes ci-dessus. Le reste est declare pour la demo (services
+  # fictifs), fixe le 18/11/2026 avant de lire un score : ni les notes ni les controles ne l etablissent.
+  listener: "present"
+  data_subjects: "none"
+  detection:
+    network: "logged"
+    host: "logged"
+    application: "not_logged"
+  traceability: "per_request"

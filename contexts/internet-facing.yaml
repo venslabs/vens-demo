@@ -1,4 +1,6 @@
 # Service A : la MEME image, deployee en frontal internet.
+schema_version: 2
+
 project:
   name: "checkout-api"
   description: "Public checkout API handling card payments for the storefront"
@@ -26,3 +28,13 @@ context:
     segmentation: true
     zero_trust: false
   notes: "Accepts unauthenticated traffic on the payment initiation route and parses attacker-controlled JSON."
+
+  # Schema 2. listener vient des notes ci-dessus. Le reste est declare pour la demo (services
+  # fictifs), fixe le 18/11/2026 avant de lire un score : ni les notes ni les controles ne l etablissent.
+  listener: "present"
+  data_subjects: "millions"
+  detection:
+    network: "logged"
+    host: "logged"
+    application: "not_logged"
+  traceability: "per_request"

@@ -1,4 +1,6 @@
 # Service B : la MEME image, deployee en batch interne.
+schema_version: 2
+
 project:
   name: "nightly-report"
   description: "Internal batch job producing an aggregated sales report"
@@ -24,3 +26,13 @@ context:
     segmentation: true
     zero_trust: false
   notes: "No ingress and no listening socket. Runs once a night, reads a pre-validated CSV from an internal bucket, writes an aggregate to a private database, then exits."
+
+  # Schema 2. listener vient des notes ci-dessus. Le reste est declare pour la demo (services
+  # fictifs), fixe le 18/11/2026 avant de lire un score : ni les notes ni les controles ne l etablissent.
+  listener: "absent"
+  data_subjects: "none"
+  detection:
+    network: "logged"
+    host: "logged"
+    application: "not_logged"
+  traceability: "none"
