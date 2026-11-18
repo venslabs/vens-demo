@@ -19,7 +19,7 @@
 # No security gate here: a gate failure would kill the later replicates.
 name: baseline
 
-run-name: baseline · ${{ inputs.archived-run }} · ${{ inputs.provider }}/${{ inputs.model }} · batch ${{ inputs.batch-size }} · x${{ inputs.replicates }} · vens ${{ inputs.vens-ref }}
+run-name: baseline · ${{ inputs.archived-run }} · ${{ inputs.provider }}/${{ inputs.model }} · batch ${{ inputs.batch-size }} · x${{ inputs.replicates }} · vens ${{ inputs.vens-ref }}${{ inputs.dispatch-id && format(' · dispatch {0}', inputs.dispatch-id) || '' }}
 
 on:
   workflow_dispatch:
@@ -42,6 +42,14 @@ on:
       vens-ref:
         description: Branch or commit of venslabs/vens to build. Leave on main to take the tip; pass a commit sha to pin a whole measurement campaign to one revision.
         default: main
+      arm:
+        description: The arm this run measures. It picks that arm's own API key, so each arm's spend shows apart in the provider's usage export.
+        type: choice
+        options: [before, after]
+        required: true
+      dispatch-id:
+        description: Set by the campaign's dispatch script and put in the run's name, so the script finds the run it started. Leave empty by hand.
+        default: ""
 
 permissions:
   contents: read
@@ -60,10 +68,23 @@ jobs:
       replicates: ${{ steps.n.outputs.list }}
     steps:
       - id: n
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          ARM: ${{ inputs.arm }}
+          DISPATCH_ID: ${{ inputs.dispatch-id }}
+          # Whether each arm's key exists, not the key: a missing one stops the run before any job calls a model.
+          OPENAI_BEFORE: ${{ secrets.OPENAI_API_KEY_BEFORE != '' }}
+          OPENAI_AFTER: ${{ secrets.OPENAI_API_KEY_AFTER != '' }}
+          ANTHROPIC_BEFORE: ${{ secrets.ANTHROPIC_API_KEY_BEFORE != '' }}
+          ANTHROPIC_AFTER: ${{ secrets.ANTHROPIC_API_KEY_AFTER != '' }}
         run: |
           n="${{ inputs.replicates }}"
           case "$n" in ''|*[!0-9]*) echo "::error::replicates must be a positive integer"; exit 1 ;; esac
           [ "$n" -ge 1 ] && [ "$n" -le 10 ] || { echo "::error::replicates must be between 1 and 10"; exit 1; }
+          case "$ARM" in before|after) ;; *) echo "::error::arm must be before or after"; exit 1 ;; esac
+          case "$DISPATCH_ID" in *[!A-Za-z0-9._-]*) echo "::error::dispatch-id takes letters, digits, '.', '_' and '-' only"; exit 1 ;; esac
+          has=$(echo "${PROVIDER}_${ARM}" | tr '[:lower:]' '[:upper:]')
+          [ "${!has}" = true ] || { echo "::error::secret $(echo "${PROVIDER}_API_KEY_${ARM}" | tr '[:lower:]' '[:upper:]') is not set: each arm runs on its own key"; exit 1; }
           echo "list=$(seq 1 "$n" | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
 
   score:
@@ -124,6 +145,10 @@ jobs:
         # to its default when the variable is empty; the check below asserts the model it attested.
         # No severity gate: `vens generate` has no severity option and exits non-zero only on an error;
         # the gate lived in vens-action, which this job set to never fail (fail-on-severity: "").
+        # attempt.json is written before `vens generate` starts and completed as each command ends, so a failed
+        # attempt keeps its record and an interrupted one its start with no exit status, the job's conclusion
+        # then saying why it stopped. vens's stderr also goes to vens-<slug>.log, so each attempt's cause and run
+        # summary travel with its artefact (venslabs/vens#310 step 4).
         id: vens
         env:
           PROVIDER: ${{ inputs.provider }}
@@ -131,22 +156,66 @@ jobs:
           BATCH: ${{ inputs.batch-size }}
           CONFIG: ${{ matrix.context.file }}
           SLUG: ${{ matrix.context.slug }}
-          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          REPLICATE: ${{ matrix.replicate }}
+          ARM: ${{ inputs.arm }}
+          VENS: /tmp/vens-bin/vens
+          VENS_REF: ${{ inputs.vens-ref }}
+          VENS_SHA: ${{ steps.build.outputs.sha }}
+          ARCHIVED_SCAN: runs/${{ inputs.archived-run }}/scan/scan.json
+          # The arm's own key, never the shared OPENAI_API_KEY / ANTHROPIC_API_KEY.
+          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && (inputs.arm == 'before' && secrets.OPENAI_API_KEY_BEFORE || inputs.arm == 'after' && secrets.OPENAI_API_KEY_AFTER) || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.provider == 'anthropic' && (inputs.arm == 'before' && secrets.ANTHROPIC_API_KEY_BEFORE || inputs.arm == 'after' && secrets.ANTHROPIC_API_KEY_AFTER) || '' }}
         run: |
           set -euo pipefail
           case "$PROVIDER" in
-            openai) export OPENAI_MODEL="$MODEL" ;;
-            anthropic) export ANTHROPIC_MODEL="$MODEL" ;;
+            openai) export OPENAI_MODEL="$MODEL"; key="$OPENAI_API_KEY" ;;
+            anthropic) export ANTHROPIC_MODEL="$MODEL"; key="$ANTHROPIC_API_KEY" ;;
           esac
-          /tmp/vens-bin/vens generate --config-file "$CONFIG" --llm "$PROVIDER" --llm-batch-size "$BATCH" \
+          if [ -z "${key:-}" ]; then
+            echo "::error::secret $(echo "${PROVIDER}_API_KEY_${ARM}" | tr '[:lower:]' '[:upper:]') is not set: each arm runs on its own key"
+            exit 1
+          fi
+
+          now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+          # Rewritten whole, so a kill mid-write leaves the record as it was.
+          record() { jq "$@" attempt.json > attempt.json.tmp && mv attempt.json.tmp attempt.json; }
+          binary=$(sha256sum "$VENS" | cut -d' ' -f1)
+          started=$(now)
+          jq -n --arg arm "$ARM" --arg provider "$PROVIDER" --arg model "$MODEL" --argjson batch "$BATCH" \
+            --arg ref "$VENS_REF" --arg sha "$VENS_SHA" --arg binary "$binary" \
+            --argjson run_id "$GITHUB_RUN_ID" --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$SLUG · run $REPLICATE" --arg context "$SLUG" --argjson replicate "$REPLICATE" \
+            --arg scan "$ARCHIVED_SCAN" --arg config "$CONFIG" --arg started "$started" \
+            '{record: 1, runner: "baseline.yml", arm: $arm, provider: $provider, model: $model,
+              llm_batch_size: $batch, vens_ref: $ref, vens_sha: $sha, vens_binary_sha256: $binary,
+              run_id: $run_id, run_attempt: $run_attempt, job: $job, context: $context, replicate: $replicate,
+              archived_scan: $scan, config: $config,
+              generate: {started_at: $started, ended_at: null, exit_status: null},
+              enrich: null, archive_check: null, provenance: null}' > attempt.json.tmp
+          mv attempt.json.tmp attempt.json
+
+          exec 3>&1
+          set +e
+          "$VENS" generate --config-file "$CONFIG" --llm "$PROVIDER" --llm-batch-size "$BATCH" \
             --input-format trivy --sbom-serial-number "$SBOM_SERIAL" --sbom-version 1 --attest \
-            --debug-dir calls scan.json "vex-$SLUG.cdx.json"
-          /tmp/vens-bin/vens enrich --vex "vex-$SLUG.cdx.json" --output "enriched-$SLUG.json" scan.json
+            --debug-dir calls scan.json "vex-$SLUG.cdx.json" 2>&1 1>&3 | tee "vens-$SLUG.log" >&2
+          status=${PIPESTATUS[0]}
+          set -e
+          record --arg t "$(now)" --argjson s "$status" '.generate += {ended_at: $t, exit_status: $s}'
+          [ "$status" -eq 0 ] || exit "$status"
+
+          record --arg t "$(now)" '.enrich = {started_at: $t, ended_at: null, exit_status: null}'
+          set +e
+          "$VENS" enrich --vex "vex-$SLUG.cdx.json" --output "enriched-$SLUG.json" scan.json
+          status=$?
+          set -e
+          record --arg t "$(now)" --argjson s "$status" '.enrich += {ended_at: $t, exit_status: $s}'
+          exit "$status"
 
       - name: Check that every call's prompts and response are archived, from the dispatched model
         # The archive holds each call's system prompt, human prompt and response text, not the serialized
         # HTTP body: the body's other fields are fixed by the vens commit, the provider and the model.
+        id: check
         env:
           SLUG: ${{ matrix.context.slug }}
           PROVIDER: ${{ inputs.provider }}
@@ -195,12 +264,27 @@ jobs:
           JSON
           cat provenance.json
 
+      - name: Complete the attempt record
+        # Runs whatever ended the steps before, the cancel included: a step that did not run is recorded skipped.
+        if: always()
+        env:
+          ARCHIVE_CHECK: ${{ steps.check.outcome }}
+        run: |
+          [ -f attempt.json ] || exit 0
+          if [ -f provenance.json ]; then provenance=true; else provenance=false; fi
+          jq --arg check "$ARCHIVE_CHECK" --argjson provenance "$provenance" \
+            '.archive_check = $check | .provenance = $provenance' attempt.json > attempt.json.tmp
+          mv attempt.json.tmp attempt.json
+          cat attempt.json
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: always()
         with:
           # One artefact per attempt, so a failed attempt's files are kept beside its replacement's.
           name: baseline-${{ inputs.model }}-${{ matrix.context.slug }}-r${{ matrix.replicate }}-a${{ github.run_attempt }}
           path: |
+            attempt.json
+            vens-${{ matrix.context.slug }}.log
             vex-${{ matrix.context.slug }}.cdx.json
             enriched-${{ matrix.context.slug }}.json
             provenance.json
